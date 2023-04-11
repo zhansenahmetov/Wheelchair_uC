@@ -60,14 +60,14 @@ volatile bool plugged_in = false; //To check plugged in or not
 
 //(__1__)These are all the states that needs to be addressed
 enum states {
+    NULL_STATE,
     CHARGER_IS_AVAILABLE,
     AWAITING_BATTERY_CONNECTION,
-    READY_TO_CHARGE,
+    AWAITING_BLE_CONNECTION,
     CHARGING_IN_PROGRESS,
     PLUGGED_FAULTY_CHARGER,
     BATTERY_FULLY_CHARGED,
     FAULTY_BATTERY,
-    TERMINATED_BY_USER,
     UNPLUGGED_FAULTY_CHARGER
 } state;
 
@@ -1027,16 +1027,14 @@ __interrupt void epwm4_tzint_isr(void)
 
 void detect_fault(void){ // Add output over-current protection at 15A and 32V
     if((!GpioDataRegs.GPCDAT.bit.GPIO95 || !is_input_voltage_equal_380V) && plugged_in){
-        main_msg = 8;
-        tx_MSG = main_msg;
-        transmit = 1;
         charger_state = PLUGGED_FAULTY_CHARGER;
+        tx_MSG = PLUGGED_FAULTY_CHARGER;
+        transmit = 1; //enable transmit
 }
     else if((!GpioDataRegs.GPCDAT.bit.GPIO95 || !is_input_voltage_equal_380V) && !plugged_in){
-        main_msg = 12;
-        tx_MSG = main_msg;
-        transmit = 1;
         charger_state = UNPLUGGED_FAULTY_CHARGER;
+        tx_MSG = UNPLUGGED_FAULTY_CHARGER;
+        transmit = 1;
 }
 }
 //
@@ -1092,19 +1090,11 @@ interrupt void scibRxFifoIsr(void)   //Change to 4-byte buffer to receive Iref, 
 
         switch(rx_MSG) {
            case 3 :
-               MSG[0] = 3;              //Request charging
-               break;
-
-           case 7 :   // 69 = 'I_ref_max [A]'
-               MSG[0] = 7;              //Start charging
-               break;
-
-           case 11 :   // 96 = 'V_char_max [V]'
-               MSG[0] = 11;             //Stop charging
+               MSG[0] = 3;              //3 means that the App connected to the charger & sent info
                break;
 
            case 15 :
-               MSG[0] = 15;             //Reset because the wheelchair RPi4 is disconnected from Bluetooth
+               MSG[0] = 15;             //Reset because the wheelchair RPi4 is disconnected from Bluetooth??? DISCUSS WITH MUHAMMAD
                break;
 
            case 118 :       //118 is the character value of 'v' >> Vref_max
@@ -1128,7 +1118,7 @@ interrupt void scibRxFifoIsr(void)   //Change to 4-byte buffer to receive Iref, 
                 MSG[0] = 0;
                 MSG[1] = 0;
                 MSG[2] = 0;
-                MSG[3] = 0;
+                MSG[3] = 0; //When these values are reset? when the charger is disconnected?
         }
 
         receive1 = 0;
@@ -1154,77 +1144,93 @@ interrupt void scibTxFifoIsr(void)
     PieCtrlRegs.PIEACK.all|=0x100;       // Issue PIE ACK
 }
 
+
+//
+//This function checks if the battery is not faulty after connection
+//
+
+void check_battery_fault(){
+    //The battery is connected now after requesting charging, the charger becomes ready to start the charging process upon the user's request.
+    //Check if battery voltage is incompatible with our 24-Volt Battery Charger
+    //I think MSG[3] will eventually be removed
+    if(v_bat_V <= MSG[3]){
+       charger_state = FAULTY_BATTERY;
+       tx_MSG = FAULTY_BATTERY;
+       transmit = 1;
+
+    }else if(v_bat_V >= Vref_ramp_max_V){
+        charger_state = BATTERY_FULLY_CHARGED;
+        tx_MSG = BATTERY_FULLY_CHARGED;
+        transmit = 1;
+
+    }
+
+    if(Vref_ramp_max_V > Vref_max_V)   Vref_ramp_max_V = Vref_max_V;
+    else if(Vref_ramp_max_V < Vref_min_V){
+        charger_state = FAULTY_BATTERY;
+        tx_MSG = FAULTY_BATTERY;
+        transmit = 1;
+
+    }
+
+    if(Imax > 10.5)   Imax = 10.5;
+    else if(Imax < 1.5){
+        charger_state = FAULTY_BATTERY;
+        tx_MSG = FAULTY_BATTERY;
+        transmit = 1;
+
+    }
+}
+
+
 //
 //(__2__) This function handles the events that trigger a state change. All events are triggered by the Rx message that is received from the RPi4.
 //
 void charger_state_event(){
     if(MSG[0]==3){ //MSG[0]==3 is received when the user requests to initiate the charging sequence
         if(charger_state==CHARGER_IS_AVAILABLE && !plugged_in){
-            main_msg=5;
-            tx_MSG = main_msg;
+            charger_state = AWAITING_BATTERY_CONNECTION;   //State 2 == Waiting for the user to connect the battery to the charger
+            tx_MSG = AWAITING_BATTERY_CONNECTION;
             transmit = 1;                                   //Send "Awaiting battery connection"
-            charger_state = AWAITING_BATTERY_CONNECTION;   //State 5 == Waiting for the user to connect the battery to the charger
-        }else if((charger_state==CHARGER_IS_AVAILABLE || charger_state==AWAITING_BATTERY_CONNECTION) && plugged_in){    //The OR here is to make it jump directly to READY_TO_CHARGE if the battery was plugged in before the user sends the request
-            main_msg=6;          //Send "Ready to charge"
-            tx_MSG = main_msg;
+
+        }else if((charger_state==CHARGER_IS_AVAILABLE || charger_state==AWAITING_BLE_CONNECTION) && plugged_in){    //if the battery was plugged in before the user sends request
+            charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
+            tx_MSG = CHARGING_IN_PROGRESS;
             transmit = 1;
-            charger_state = READY_TO_CHARGE;   //State 6 == Ready to start charging the wheelchair battery
+            check_battery_fault(); //if the battery is faulty, the tx_MSG and charger_state will change
         }
-    }else if(MSG[0]==7){ //MSG[0]==7 is received when the user requests to start the charging process
-        if(charger_state==READY_TO_CHARGE || charger_state==TERMINATED_BY_USER){    //The OR here is to allow the user to toggle start/stop the charging process as long as he is at this stage of the code (battery is secured and plugged in)
-            main_msg = 7;
-            tx_MSG = main_msg;       //Sends charging started
-            transmit = 1;
-            charger_state = CHARGING_IN_PROGRESS;  //State 7 == The charger is currently charging the battery
-        }
-    }else if(MSG[0]==11){ //MSG[0]==11 is received when the user requests to terminate the charging process
-        main_msg=11;
-        tx_MSG = main_msg;
-        transmit = 1;
-        charger_state = TERMINATED_BY_USER;  //State 11 == The charging process has been terminated by the user
-    }else if(MSG[0]==15){ //MSG[0]==15 is received when the user disconnects his Bluethooth from the charging station. Once received, the charger RESETS and become available again for the next user.
-        main_msg=1;
-        tx_MSG = main_msg;
-        transmit = 1;
-        charger_state = CHARGER_IS_AVAILABLE;
-    }else{         //MSG[0] always resets to 0 after every event trigger (if there is no special MSG[0] == {3,7,11,15} that is sent by the user)
+    }else{//MSG[0] always resets to 0 after every event trigger (if there is no special MSG[0] == 3 that is sent by the user)
         if(charger_state==AWAITING_BATTERY_CONNECTION && plugged_in){    //Plugged in the battery after requesting
-            main_msg = 6;
-            tx_MSG = main_msg;
+            charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
+            tx_MSG = CHARGING_IN_PROGRESS;
             transmit = 1;
-            charger_state = READY_TO_CHARGE;   //State 6 == Ready to start charging the wheelchair battery
-        }else if(charger_state==READY_TO_CHARGE && !plugged_in){ //Unplugged the battery after requesting
-            main_msg=5;
-            tx_MSG = main_msg;
+            check_battery_fault(); //if the battery is faulty, the tx_MSG and charger_state will change
+        }else if(charger_state==CHARGER_IS_AVAILABLE && plugged_in){    //if the battery was plugged in before the user sends request
+            charger_state = AWAITING_BLE_CONNECTION;
+            tx_MSG = AWAITING_BLE_CONNECTION;
             transmit = 1;
-            charger_state = AWAITING_BATTERY_CONNECTION;   //State 5 == Waiting for the user to connect the battery to the charger
+        }else if(charger_state==AWAITING_BLE_CONNECTION && !plugged_in){ //Unplugged the battery after plugging without BLE connection
+            charger_state = CHARGER_IS_AVAILABLE;   //State 1 == CHARGER_IS_AVAILABLE
+            tx_MSG = CHARGER_IS_AVAILABLE;
+            transmit = 1;
         }else if(charger_state==CHARGING_IN_PROGRESS && !plugged_in){ //Unplugged the battery during the charging process
-            main_msg=14;         //Battery has been unplugged by the user
-            tx_MSG = 14;
-            transmit = 1;
-            charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
-        }else if(charger_state==TERMINATED_BY_USER && !plugged_in){ //Battery is unplugged after the charging process was terminated by the user
-            main_msg=14;
-            tx_MSG = main_msg;
+            tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
         }else if(charger_state==FAULTY_BATTERY && !plugged_in){// Battery fault resolved by unplugging the battery. Triggered if the battery voltage is not around 24V or if the battery voltage is less that its own minimum voltage (i.e., damaged battery).
-            main_msg=14;
-            tx_MSG = main_msg;
+            tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
         }else if(charger_state==BATTERY_FULLY_CHARGED && !plugged_in){//Completed the charging process and unplugged the battery. This is triggered when the battery voltage exceeds the maximum allowed charging voltage (inside the battery voltage loop)
-            main_msg = 14;
-            tx_MSG = main_msg;
+            tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
         }else if(charger_state==PLUGGED_FAULTY_CHARGER && !plugged_in){//Charger goes into the fault condition and the battery is unplugged. The fault function triggers the event the changes the charger state to PLUGGED_FAULTY_CHARGER.
-            main_msg = 14;
-            tx_MSG = main_msg;
+            tx_MSG = 14;
             transmit = 1;
             charger_state = UNPLUGGED_FAULTY_CHARGER;                  //Now charger is faulty and unplugged
-        }else{  //This is never executed
-            tx_MSG = main_msg;
+        }else{  //This is executed to send the current state of the charger to RPi
+            tx_MSG = charger_state;
             transmit = 1;
         }
     }
@@ -1232,7 +1238,7 @@ void charger_state_event(){
 }
 
 //
-//(__3__) execute commands relavent to each state
+//(__3__) execute commands relevant to each state
 //
 void charger_state_execute(){
     switch(charger_state) {
@@ -1247,38 +1253,7 @@ void charger_state_execute(){
            disable_and_reset_charger();
             break;
 
-       case READY_TO_CHARGE:    //The battery is connected now after requesting charging, the charger becomes ready to start the charging process upon the user's request.
-            //Check if battery voltage is incompatible with our 24-Volt Battery Charger
-            //I think MSG[3] will eventually be removed
-            if(v_bat_V <= MSG[3]){
-               main_msg = 10;
-               tx_MSG = main_msg;
-               transmit = 1;
-               charger_state = FAULTY_BATTERY;
-            }else if(v_bat_V >= Vref_ramp_max_V){
-                main_msg = 9;
-                tx_MSG = main_msg;
-                transmit = 1;
-                charger_state = BATTERY_FULLY_CHARGED;
-            }
 
-            if(Vref_ramp_max_V > Vref_max_V)   Vref_ramp_max_V = Vref_max_V;
-            else if(Vref_ramp_max_V < Vref_min_V){
-                main_msg = 10;
-                tx_MSG = main_msg;
-                transmit = 1;
-                charger_state = FAULTY_BATTERY;
-            }
-
-            if(Imax > 10.5)   Imax = 10.5;
-            else if(Imax < 1.5){
-                main_msg = 10;
-                tx_MSG = main_msg;
-                transmit = 1;
-                charger_state = FAULTY_BATTERY;
-            }
-
-            break;
 
        case CHARGING_IN_PROGRESS:             //Start charging and go into charging-in-progress state (Verify Iref, Vref, and Vmin before charging the controller)
                             //We come here after the user allows the charging process to start
@@ -1302,11 +1277,6 @@ void charger_state_execute(){
             }
             break;
 
-       case TERMINATED_BY_USER:                 //The charging process is terminated by the user
-
-           disable_and_reset_charger();
-           run_once = true;
-            break;
 
        case BATTERY_FULLY_CHARGED:            //Completed the charging process
            disable_and_reset_charger();
