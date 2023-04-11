@@ -356,7 +356,7 @@ void main(void)
 //
 // Initialize the SCI-B Port Device Peripherals:
 //
-    DELAY_US(30000000);       //>>Necessary to allow the RASPBERRY PI TO BOOT UP FIRST WITHOUT INTERFERING WITH THE uC UNIT
+//    DELAY_US(30000000);       //>>Necessary to allow the RASPBERRY PI TO BOOT UP FIRST WITHOUT INTERFERING WITH THE uC UNIT
     scib_fifo_init();  // Init SCI-A
 
 
@@ -446,7 +446,7 @@ void main(void)
         charger_state_execute();              //Executes the commands of each state
         charger_state_event();                //Determines the state (needs to be modified with Zhansen)
 
-        detect_fault();                       //Check for faults
+//        detect_fault();                       //Check for faults
 
 //
 //Continuously calculate the battery and filter capacitor voltage and check if the battery is plugged in or not
@@ -457,7 +457,7 @@ void main(void)
 //
 //Continuously check if a batter is detected or not and perform pre-charging based on that
 //
-        pre_charge_ouput_capacitor();
+//        pre_charge_ouput_capacitor();
 
 //
 //This function controls the cooling fans based on the sensed temperatures
@@ -1149,7 +1149,7 @@ interrupt void scibTxFifoIsr(void)
 //This function checks if the battery is not faulty after connection
 //
 
-void check_battery_fault(){
+int check_battery_fault(){
     //The battery is connected now after requesting charging, the charger becomes ready to start the charging process upon the user's request.
     //Check if battery voltage is incompatible with our 24-Volt Battery Charger
     //I think MSG[3] will eventually be removed
@@ -1157,31 +1157,43 @@ void check_battery_fault(){
        charger_state = FAULTY_BATTERY;
        tx_MSG = FAULTY_BATTERY;
        transmit = 1;
+       return 1;
 
     }else if(v_bat_V >= Vref_ramp_max_V){
         charger_state = BATTERY_FULLY_CHARGED;
         tx_MSG = BATTERY_FULLY_CHARGED;
         transmit = 1;
-
+        return 1;
     }
 
-    if(Vref_ramp_max_V > Vref_max_V)   Vref_ramp_max_V = Vref_max_V;
+    if(Vref_ramp_max_V > Vref_max_V)
+        Vref_ramp_max_V = Vref_max_V;
     else if(Vref_ramp_max_V < Vref_min_V){
         charger_state = FAULTY_BATTERY;
         tx_MSG = FAULTY_BATTERY;
         transmit = 1;
-
+        return 1;
     }
 
-    if(Imax > 10.5)   Imax = 10.5;
+    if(Imax > 10.5)
+        Imax = 10.5;
     else if(Imax < 1.5){
         charger_state = FAULTY_BATTERY;
         tx_MSG = FAULTY_BATTERY;
         transmit = 1;
-
+        return 1;
     }
+    return 0;
 }
 
+void reset_battery_parameters(){
+    MSG[0] = 0;
+    MSG[1] = 0;
+    MSG[2] = 0;
+    MSG[3] = 0;
+    Vref_ramp_max_V = 29;
+    Imax = 10.5;
+}
 
 //
 //(__2__) This function handles the events that trigger a state change. All events are triggered by the Rx message that is received from the RPi4.
@@ -1194,17 +1206,21 @@ void charger_state_event(){
             transmit = 1;                                   //Send "Awaiting battery connection"
 
         }else if((charger_state==CHARGER_IS_AVAILABLE || charger_state==AWAITING_BLE_CONNECTION) && plugged_in){    //if the battery was plugged in before the user sends request
-            charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
-            tx_MSG = CHARGING_IN_PROGRESS;
-            transmit = 1;
-            check_battery_fault(); //if the battery is faulty, the tx_MSG and charger_state will change
+            if(0==0){ //if the battery is faulty, the tx_MSG and charger_state will change
+                charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
+                tx_MSG = CHARGING_IN_PROGRESS;
+                transmit = 1;
+            }
+
         }
     }else{//MSG[0] always resets to 0 after every event trigger (if there is no special MSG[0] == 3 that is sent by the user)
         if(charger_state==AWAITING_BATTERY_CONNECTION && plugged_in){    //Plugged in the battery after requesting
-            charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
-            tx_MSG = CHARGING_IN_PROGRESS;
-            transmit = 1;
-            check_battery_fault(); //if the battery is faulty, the tx_MSG and charger_state will change
+            if(0==0){ //if the battery is faulty, the tx_MSG and charger_state will change
+                charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
+                tx_MSG = CHARGING_IN_PROGRESS;
+                transmit = 1;
+            }
+
         }else if(charger_state==CHARGER_IS_AVAILABLE && plugged_in){    //if the battery was plugged in before the user sends request
             charger_state = AWAITING_BLE_CONNECTION;
             tx_MSG = AWAITING_BLE_CONNECTION;
@@ -1213,22 +1229,27 @@ void charger_state_event(){
             charger_state = CHARGER_IS_AVAILABLE;   //State 1 == CHARGER_IS_AVAILABLE
             tx_MSG = CHARGER_IS_AVAILABLE;
             transmit = 1;
+            reset_battery_parameters();
         }else if(charger_state==CHARGING_IN_PROGRESS && !plugged_in){ //Unplugged the battery during the charging process
             tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
+            reset_battery_parameters();
         }else if(charger_state==FAULTY_BATTERY && !plugged_in){// Battery fault resolved by unplugging the battery. Triggered if the battery voltage is not around 24V or if the battery voltage is less that its own minimum voltage (i.e., damaged battery).
             tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
+            reset_battery_parameters();
         }else if(charger_state==BATTERY_FULLY_CHARGED && !plugged_in){//Completed the charging process and unplugged the battery. This is triggered when the battery voltage exceeds the maximum allowed charging voltage (inside the battery voltage loop)
             tx_MSG = 14;//Battery has been unplugged by the user
             transmit = 1;
             charger_state = CHARGER_IS_AVAILABLE;  //Make the charging station available again
+            reset_battery_parameters();
         }else if(charger_state==PLUGGED_FAULTY_CHARGER && !plugged_in){//Charger goes into the fault condition and the battery is unplugged. The fault function triggers the event the changes the charger state to PLUGGED_FAULTY_CHARGER.
             tx_MSG = 14;
             transmit = 1;
             charger_state = UNPLUGGED_FAULTY_CHARGER;                  //Now charger is faulty and unplugged
+            reset_battery_parameters();
         }else{  //This is executed to send the current state of the charger to RPi
             tx_MSG = charger_state;
             transmit = 1;
