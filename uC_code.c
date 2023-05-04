@@ -19,7 +19,7 @@
 float Kp_i = -4.5e+03;          //Designed at 29.2V 10A
 float Ki_i = -9e+07;            //
 
-//float Kp_v = 0.0183;           //10 Hz (without charging cable resistance)
+//float Kp_v = 0.0183;          //10 Hz (without charging cable resistance)
 //float Ki_v = 340;
 
 float Kp_v = 0.0367;            //20 Hz (with charging cable resistance)
@@ -35,8 +35,8 @@ float Ki_v = 679;
 //
 // Timer interrupt function execution rates all in [us]
 //
-#define CpuTimer0_us_period	1.5625	//Currently 80*8 = 640 kHz
-#define CpuTimer1_us_period	12.5	//Currently 80 kHz
+#define CpuTimer0_us_period 1.5625  //Currently 80*8 = 640 kHz
+#define CpuTimer1_us_period 12.5    //Currently 80 kHz
 
 #define ADC_AVG_NUM          16
 #define ADC_AVG_LOG           4
@@ -52,7 +52,7 @@ float Ki_v = 679;
 volatile int k = 0;
 volatile bool transmit = false, received = false;
 volatile unsigned char tx_MSG = 0;
-volatile unsigned char rx_MSG = 0, receive1 = 0;
+volatile unsigned char rx_MSG = 0, temp_flush = 0, receive1 = 0;
 unsigned char main_msg = 0;
 volatile unsigned char MSG[] = {0,0,0,0};   //MSG[0] > received message from RPi4; MSG[1] = Vref_max; MSG[2] = Iref_max; MSG[3] = Vbat_min
 
@@ -141,7 +141,7 @@ volatile int PFC_adc_temp = 0, GaN_adc_temp = 0, SR_adc_temp = 0;
 
 float Vbat_factor = 0.008385, Vbat_offset = -0.04023;           // Updated on 29/5/2022 ()
 float Vout_factor = 0.01325, Vout_offset = -0.1475;            // Updated on 31/5/2022 (Needed for control and protection)
-float Iout_factor = 0.008289, Iout_offset = -3.783;      	    // Updated on 29/5/2022 (Needed for control)
+float Iout_factor = 0.008289, Iout_offset = -3.783;             // Updated on 29/5/2022 (Needed for control)
 //float Iout_factor = 0.006317, Iout_offset = -2.754;           // Updated on 29/5/2022 (Needed for control)
 float T_factor = -0.08975, T_offset = 225.6;             // Updated on 29/5/2022 (Needed for control)
 
@@ -158,7 +158,7 @@ float Omega_2_kHz = 0;
 float PI = 3.14159;
 float Kp_current_loop = 0, Ki_Ts_current_loop = 0, Kb_current_loop = 0;
 
-volatile float Fref_new_kHz = 0, Fref_kHz_input = 170, fmax = 170, fmin = 98; 		// in kHz
+volatile float Fref_new_kHz = 0, Fref_kHz_input = 170, fmax = 170, fmin = 98;       // in kHz
 uint16_t frequency_ref_KHz = 160;       // Initializing PWM frequency
 
 volatile float ei_k = 0, ei_km1 = 0, e_k_i = 0, ey_km1_i = 0;
@@ -186,7 +186,7 @@ volatile float Vref_ft = 0;
 
 volatile float Iref = 0;
 
-float Imax = 10.5, Imin = 0; 	//11*2^17
+float Imax = 10.5, Imin = 0;    //11*2^17
 bool voltage_loop_control = 0, voltage_loop_RESET = 0, RELAY = 0, MOSFET = 0;
 
 volatile long int v_out_avg = 0, Vout_meas = 0, Vref = 0;
@@ -343,8 +343,8 @@ void main(void)
 
     InitCpuTimers();   // For this example, only initialize the Cpu Timers
 
-    ConfigCpuTimer(&CpuTimer0, 200, CpuTimer0_us_period); 	//Currently 400 kHz
-    ConfigCpuTimer(&CpuTimer1, 200, CpuTimer1_us_period); 	//Currently 80 kHz
+    ConfigCpuTimer(&CpuTimer0, 200, CpuTimer0_us_period);   //Currently 400 kHz
+    ConfigCpuTimer(&CpuTimer1, 200, CpuTimer1_us_period);   //Currently 80 kHz
     CpuTimer0Regs.TCR.all = 0x4000;
     CpuTimer1Regs.TCR.all = 0x4000;
 //
@@ -356,7 +356,7 @@ void main(void)
 //
 // Initialize the SCI-B Port Device Peripherals:
 //
-//    DELAY_US(30000000);       //>>Necessary to allow the RASPBERRY PI TO BOOT UP FIRST WITHOUT INTERFERING WITH THE uC UNIT
+    DELAY_US(30000000);       //>>Necessary to allow the RASPBERRY PI TO BOOT UP FIRST WITHOUT INTERFERING WITH THE uC UNIT
     scib_fifo_init();  // Init SCI-A
 
 
@@ -387,29 +387,29 @@ void main(void)
     EALLOW;
     CpuSysRegs.PCLKCR0.bit.TBCLKSYNC = 1;
     EDIS;
-	
-	//
-	// PI inner current controller initialization
-	//
-	TS = (CpuTimer1_us_period*1e-6);	//TS = 1/80 kHz
-	Omega_2_kHz= 0.001/(2*3.14);
-	Kp_current_loop = Kp_i*Omega_2_kHz;			//Initialize as float
-	Ki_Ts_current_loop = Ki_i*TS*Omega_2_kHz;	//Initialize as float
-	//Kb_current_loop = Ki_i*Omega_2_kHz*0.00001;
-	Kb_current_loop = -1;        //This coefficient relates the output to the input. It needs to be scaled appropriately to be proportional to the input error
 
-	//
-	// PI outer voltage controller initialization
-	//
-	Kp_voltage_loop = Kp_v*Vout_factor;
-	Ki_Ts_voltage_loop = Ki_v*TS*Vout_factor;	//Initialize as long integers
-	//Kb_voltage_loop = Ki_v*Vout_factor;
-	Kb_voltage_loop = 1;
-	
-	//Vref=floor(Vref_ft);
-	Vref_ft = (Vref_V - Vout_offset)/Vout_factor;
-	Vref = Vref_ft;
-	if((Vref_ft - Vref) >= 0.5) Vref++;
+    //
+    // PI inner current controller initialization
+    //
+    TS = (CpuTimer1_us_period*1e-6);    //TS = 1/80 kHz
+    Omega_2_kHz= 0.001/(2*3.14);
+    Kp_current_loop = Kp_i*Omega_2_kHz;         //Initialize as float
+    Ki_Ts_current_loop = Ki_i*TS*Omega_2_kHz;   //Initialize as float
+    //Kb_current_loop = Ki_i*Omega_2_kHz*0.00001;
+    Kb_current_loop = -1;        //This coefficient relates the output to the input. It needs to be scaled appropriately to be proportional to the input error
+
+    //
+    // PI outer voltage controller initialization
+    //
+    Kp_voltage_loop = Kp_v*Vout_factor;
+    Ki_Ts_voltage_loop = Ki_v*TS*Vout_factor;   //Initialize as long integers
+    //Kb_voltage_loop = Ki_v*Vout_factor;
+    Kb_voltage_loop = 1;
+
+    //Vref=floor(Vref_ft);
+    Vref_ft = (Vref_V - Vout_offset)/Vout_factor;
+    Vref = Vref_ft;
+    if((Vref_ft - Vref) >= 0.5) Vref++;
 
     while (SFO() == 0) {}; // one time run to initialize MEP factor
 
@@ -440,13 +440,12 @@ void main(void)
 
     for(;;)
     {
-
         if(transmit==1){ScibRegs.SCICTL1.bit.TXENA = 1; transmit = 0;}      //Control transmit action
 
         charger_state_execute();              //Executes the commands of each state
         charger_state_event();                //Determines the state (needs to be modified with Zhansen)
 
-//        detect_fault();                       //Check for faults
+        detect_fault();                       //Check for faults
 
 //
 //Continuously calculate the battery and filter capacitor voltage and check if the battery is plugged in or not
@@ -457,7 +456,7 @@ void main(void)
 //
 //Continuously check if a batter is detected or not and perform pre-charging based on that
 //
-//        pre_charge_ouput_capacitor();
+        pre_charge_ouput_capacitor();
 
 //
 //This function controls the cooling fans based on the sensed temperatures
@@ -729,11 +728,11 @@ __interrupt void cpu_timer1_isr(void)
 //Software low-pass filter (Used in the currentController (bypass by setting Iout_meas = i_out_avg))
 //
 //    i_out_avg_LPF = alpha_i*(i_out_avg + i_out_avg_m1) + beta_i*i_out_avg_LPF_m1;   //(double) 12.73 kHz LPF
-//    i_out_avg_LPF_m1 = i_out_avg_LPF;	//(double)
-//    i_out_avg_m1 = i_out_avg;	//(double)
-//    Iout_meas_test = (float) i_out_avg_LPF*Iout_factor + Iout_offset;	//(float)
+//    i_out_avg_LPF_m1 = i_out_avg_LPF; //(double)
+//    i_out_avg_m1 = i_out_avg; //(double)
+//    Iout_meas_test = (float) i_out_avg_LPF*Iout_factor + Iout_offset; //(float)
 
-	Iout_meas = i_out_avg*Iout_factor + Iout_offset;
+    Iout_meas = i_out_avg*Iout_factor + Iout_offset;
 
 // Low pass filter for voltage sampling
 //     v_out_avg_LPF = alpha*(v_out_avg+v_out_avg_m1)+beta*v_out_avg_LPF_m1; // % 400 Hz LPF
@@ -741,7 +740,7 @@ __interrupt void cpu_timer1_isr(void)
 //     v_out_avg_m1 = v_out_avg;
 //
 //     Vout_meas = v_out_avg_LPF;
-	Vout_meas = v_out_avg;
+    Vout_meas = v_out_avg;
 
     //The controller can only start if a battery voltage that is more than 22 V is detected and a 380-V bus is established by the PFC
     if (load_connected == true) //&& is_input_voltage_equal_380V == true
@@ -889,78 +888,78 @@ void CurrentLoop_Battery(void) // PI Controller Loop
 {
    // GpioDataRegs.GPADAT.bit.GPIO5 = 1;
 
-	//Calculate the error
-	ei_k = Iref - Iout_meas;	//Difference
+    //Calculate the error
+    ei_k = Iref - Iout_meas;    //Difference
 
-	//Back-calculation error
-	e_k_i = ei_k + ey_km1_i;
+    //Back-calculation error
+    e_k_i = ei_k + ey_km1_i;
 
-	//(Unsaturated) Calculate output
-	f_kHz_unsat_k = Kp_current_loop*(ei_k - ei_km1) + Ki_Ts_current_loop*e_k_i + f_kHz_sat_km1;
+    //(Unsaturated) Calculate output
+    f_kHz_unsat_k = Kp_current_loop*(ei_k - ei_km1) + Ki_Ts_current_loop*e_k_i + f_kHz_sat_km1;
 
-	//Check for saturation and the calculated saturated output
+    //Check for saturation and the calculated saturated output
     if (f_kHz_unsat_k >= fmax)
-    { 
-        f_kHz_sat_k = fmax; 
-    } 
+    {
+        f_kHz_sat_k = fmax;
+    }
     else if (f_kHz_unsat_k <= fmin)
-    { 
-        f_kHz_sat_k = fmin; 
-    } 
-    else 
-    { 
-         f_kHz_sat_k = f_kHz_unsat_k; 
-    } 
+    {
+        f_kHz_sat_k = fmin;
+    }
+    else
+    {
+         f_kHz_sat_k = f_kHz_unsat_k;
+    }
 
-	//Calculate and save variables for the next iteration
+    //Calculate and save variables for the next iteration
     ey_km1_i = Kb_current_loop*(f_kHz_sat_k - f_kHz_unsat_k);
     ei_km1 = ei_k;
-	f_kHz_sat_km1 = f_kHz_sat_k;
+    f_kHz_sat_km1 = f_kHz_sat_k;
 
-	// Controller output reference current
-	Fref_new_kHz = f_kHz_sat_k;
+    // Controller output reference current
+    Fref_new_kHz = f_kHz_sat_k;
 
 }
 
 void VoltageLoop_Battery(void) // PI Controller Loop
-// This function processes the ADC value of the output voltage 
+// This function processes the ADC value of the output voltage
 // Kp and Ki parameters are divided by Vout_factor since Vout_meas is in ADC
 {
-	//GpioDataRegs.GPADAT.bit.GPIO5 = 1;
+    //GpioDataRegs.GPADAT.bit.GPIO5 = 1;
 
-	//Calculate the error
-	ev_k = Vref - Vout_meas;	// (volatile float) Difference of ADC values
+    //Calculate the error
+    ev_k = Vref - Vout_meas;    // (volatile float) Difference of ADC values
     //ev_k = Vref - Vout_meas_INPUT;
 
-	//Back-calculation error
-	e_k_v = ev_k + ey_km1_v;		// (volatile double)
+    //Back-calculation error
+    e_k_v = ev_k + ey_km1_v;        // (volatile double)
 
-	//(Unsaturated) Calculate output
-	i_unsat_k = Kp_voltage_loop*(ev_k - ev_km1) + Ki_Ts_voltage_loop*e_k_v + i_sat_km1; // Outputs current in [A]
+    //(Unsaturated) Calculate output
+    i_unsat_k = Kp_voltage_loop*(ev_k - ev_km1) + Ki_Ts_voltage_loop*e_k_v + i_sat_km1; // Outputs current in [A]
 
-	//Check for saturation and the calculated saturated output 
-	if (i_unsat_k >= Imax) 
-	{ 
-		i_sat_k = Imax; 
-	} 
-	else if (i_unsat_k <= Imin) 
-	{ 
-		i_sat_k = Imin; 
-	} 
-	else 
-	{ 
-		i_sat_k = i_unsat_k; 
-	} 
+    //Check for saturation and the calculated saturated output
+    if (i_unsat_k >= Imax)
+    {
+        i_sat_k = Imax;
+    }
+    else if (i_unsat_k <= Imin)
+    {
+        i_sat_k = Imin;
+    }
+    else
+    {
+        i_sat_k = i_unsat_k;
+    }
 
-	//Calculate and save variables for the next iteration 
-	ey_km1_v = Kb_voltage_loop*(i_sat_k - i_unsat_k);
-	ev_km1 = ev_k;
-	i_sat_km1 = i_sat_k;
+    //Calculate and save variables for the next iteration
+    ey_km1_v = Kb_voltage_loop*(i_sat_k - i_unsat_k);
+    ev_km1 = ev_k;
+    i_sat_km1 = i_sat_k;
 
-	// Controller output reference current 
-	Iref = i_sat_k; 
+    // Controller output reference current
+    Iref = i_sat_k;
 
-	//GpioDataRegs.GPADAT.bit.GPIO5 = 0;
+    //GpioDataRegs.GPADAT.bit.GPIO5 = 0;
 }
 
 void ramp_pwm(void)
@@ -1079,7 +1078,6 @@ interrupt void scibRxFifoIsr(void)   //Change to 4-byte buffer to receive Iref, 
     //int i;
 
     //rx_status = ScibRegs.SCIFFRX.bit.RXFFST;        //Ask a question about FIFO here
-
     rx_MSG = ScibRegs.SCIRXBUF.all;
     //receive1 = ScibRegs.SCIFFRX.bit.RXFFST;
     receive1 = ScibRegs.SCIFFRX.bit.RXFFINT;
@@ -1089,8 +1087,8 @@ interrupt void scibRxFifoIsr(void)   //Change to 4-byte buffer to receive Iref, 
         transmit = 1;
 
         switch(rx_MSG) {
-           case 3 :
-               MSG[0] = 3;              //3 means that the App connected to the charger & sent info
+           case 13 :
+               MSG[0] = 13;              //3 means that the App connected to the charger & sent info
                break;
 
            case 15 :
@@ -1199,23 +1197,29 @@ void reset_battery_parameters(){
 //(__2__) This function handles the events that trigger a state change. All events are triggered by the Rx message that is received from the RPi4.
 //
 void charger_state_event(){
-    if(MSG[0]==3){ //MSG[0]==3 is received when the user requests to initiate the charging sequence
+    if(MSG[0]==13){ //MSG[0]==3 is received when the user requests to initiate the charging sequence
         if(charger_state==CHARGER_IS_AVAILABLE && !plugged_in){
             charger_state = AWAITING_BATTERY_CONNECTION;   //State 2 == Waiting for the user to connect the battery to the charger
             tx_MSG = AWAITING_BATTERY_CONNECTION;
             transmit = 1;                                   //Send "Awaiting battery connection"
 
         }else if((charger_state==CHARGER_IS_AVAILABLE || charger_state==AWAITING_BLE_CONNECTION) && plugged_in){    //if the battery was plugged in before the user sends request
-            if(0==0){ //if the battery is faulty, the tx_MSG and charger_state will change
+            if(check_battery_fault()==0){ //if the battery is faulty, the tx_MSG and charger_state will change
                 charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
                 tx_MSG = CHARGING_IN_PROGRESS;
                 transmit = 1;
             }
 
         }
+    }else if(MSG[0]==15){ //When BLE is disconnected before staring charging
+        charger_state = CHARGER_IS_AVAILABLE;   //State 1 == CHARGER_IS_AVAILABLE
+        tx_MSG = CHARGER_IS_AVAILABLE;
+        transmit = 1;
+        reset_battery_parameters();
+
     }else{//MSG[0] always resets to 0 after every event trigger (if there is no special MSG[0] == 3 that is sent by the user)
         if(charger_state==AWAITING_BATTERY_CONNECTION && plugged_in){    //Plugged in the battery after requesting
-            if(0==0){ //if the battery is faulty, the tx_MSG and charger_state will change
+            if(check_battery_fault()==0){ //if the battery is faulty, the tx_MSG and charger_state will change
                 charger_state = CHARGING_IN_PROGRESS;   //State 4 == CHARGING IN PROGRESS
                 tx_MSG = CHARGING_IN_PROGRESS;
                 transmit = 1;
@@ -1274,11 +1278,8 @@ void charger_state_execute(){
            disable_and_reset_charger();
             break;
 
-
-
        case CHARGING_IN_PROGRESS:             //Start charging and go into charging-in-progress state (Verify Iref, Vref, and Vmin before charging the controller)
                             //We come here after the user allows the charging process to start
-
             if(run_once==true && load_connected==true){
 
                reset_hardware_fault();
@@ -1292,14 +1293,14 @@ void charger_state_execute(){
             }
 
             //During the charging process, once Iref and Iout_meas is less than 1.5 A, stop the charging process and change the charger state
-            if(Iref <= 1.5 && Iout_meas <= 1.5 && Vref_V >= Vref_ramp_max_V){
+            if(Iref <= 2 && Iout_meas <= 2 && Vref_V >= Vref_ramp_max_V){
                 disable_and_reset_charger();
                 charger_state = BATTERY_FULLY_CHARGED;
             }
             break;
 
-
        case BATTERY_FULLY_CHARGED:            //Completed the charging process
+
            disable_and_reset_charger();
            run_once = true;                   //Should be able to run the controller again (if charger_state changes to 7)
             break;
@@ -1308,19 +1309,20 @@ void charger_state_execute(){
 
            disable_and_reset_charger();
            run_once = false;                  //Should not be able to run the controller again (if charger_state changes to 7)
-            break;            //Should be able to run the controller again (if charger_state changes to 7)
+           break;            //Should be able to run the controller again (if charger_state changes to 7)
 
        case PLUGGED_FAULTY_CHARGER:            //Fault
 
            disable_and_reset_charger();
            run_once = false;                      //Should not be able to run the controller again (if charger_state changes to 7)
-            break;
+           break;
 
        case UNPLUGGED_FAULTY_CHARGER:            //Fault
 
            disable_and_reset_charger();
            run_once = false;                      //Should not be able to run the controller again (if charger_state changes to 7)
-            break;
+           break;
+
        default:            //Charging is disabled by default / all battery relays/switches are open / dual-loop controller is OFF
 
            disable_and_reset_charger();
@@ -1339,7 +1341,7 @@ void pre_charge_ouput_capacitor() {
         plugged_in = false;
         GpioDataRegs.GPADAT.bit.GPIO0 = 0;      // Turn on UPPER MOSFET
         GpioDataRegs.GPADAT.bit.GPIO1 = 0;      // Turn off Output Relay (for the precharge circuit)
-        load_connected = false;                   //LOAD IS CONNECTED
+        load_connected = false;                 //LOAD IS CONNECTED
         run_once1 = true;
     }
 
@@ -1350,10 +1352,10 @@ void pre_charge_ouput_capacitor() {
         }
 
         if(v_out_V > 20){
-           GpioDataRegs.GPADAT.bit.GPIO0 = 1;      // Turn on UPPER MOSFET
+           GpioDataRegs.GPADAT.bit.GPIO0 = 1;   // Turn on UPPER MOSFET
            DELAY_US(5000);
-           GpioDataRegs.GPADAT.bit.GPIO1 = 0;      // Turn off Output Relay (for the precharge circuit)
-           load_connected = true;                 //LOAD IS CONNECTED
+           GpioDataRegs.GPADAT.bit.GPIO1 = 0;   // Turn off Output Relay (for the precharge circuit)
+           load_connected = true;               //LOAD IS CONNECTED
            run_once1 = false;
         }else{
            load_connected = false;
